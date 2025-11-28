@@ -40,5 +40,11 @@ def criar_colunas(resultado: list):
 
     return df
 
+
+
+novos_valores = ['Órgão', 'Quant. Multas', 'Valor das Multas']
+
+resultado[69:69] = novos_valores
+
 df = criar_colunas(resultado)
 # %%
