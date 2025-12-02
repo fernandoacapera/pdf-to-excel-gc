@@ -1,2 +1,9 @@
 [server]
-maxUploadSize = 1000
+maxUploadSize = 2000                  # Aumenta limite para 2GB
+enableXsrfProtection = false          # Desabilita proteção que bloqueia muitos uploads locais
+enableCORS = false                    # Desabilita bloqueio de origem cruzada
+enableWebsocketCompression = false    # Melhora estabilidade em transferências grandes
+
+[browser]
+serverAddress = "localhost"
+serverPort = 8501
