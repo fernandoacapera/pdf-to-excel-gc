@@ -3,8 +3,10 @@ import pymupdf
 import re
 import pandas as pd
 import io
+import gc
+import zipfile
 
-# --- 1. Definição das Colunas (Horizontalizada para 10 bloqueios) ---
+# --- 1. Definição das Colunas ---
 COLUNAS = [
     'Placa', 'Renavam', 'Ano modelo', 'Marca modelo', 'Ano Fabricação', 'Cor', 'Chassi', 'Remarcação Chassi', 
     'Combustível', 'Tipo', 'Bloqueio de furto', 'Blindagem', 'Bloqueio de guincho', 'Ultimo licenciamento', 
@@ -20,7 +22,6 @@ COLUNAS = [
     'Débitos de multa', 'Débitos na divida ativa', 'Débitos total', 'Quant.Multas Municipal', 'Valor das Multas Municipal', 
     'Quant.Multas Detran', 'Valor das Multas Detran', 'Quant.Multas D.E.R', 'Valor das Multas D.E.R', 'Quant. Multas Outros', 
     'Valor das Multas Outros', 
-    
     # Bloqueios 1 a 10
     'Bloqueio 1', 'Tipo Bloqueio 1', 'Descrição Bloqueio 1', 'Municipio Bloqueio 1', 'Número Edital Bloqueio 1', 'Ano Edital Bloqueio 1', 'Autoridade Bloqueio 1' , 'Número Lote Bloqueio 1', 'Número Protocolo Bloqueio 1', 'Ano Protocolo Bloqueio 1', 'Data Inclusão Bloqueio 1', 'Hora Inclusão Bloqueio 1', 'Motivo 1 Bloqueio 1',
     'Bloqueio 2', 'Tipo Bloqueio 2', 'Descrição Bloqueio 2', 'Municipio Bloqueio 2', 'Número Edital Bloqueio 2', 'Ano Edital Bloqueio 2', 'Autoridade Bloqueio 2' , 'Número Lote Bloqueio 2', 'Número Protocolo Bloqueio 2', 'Ano Protocolo Bloqueio 2', 'Data Inclusão Bloqueio 2', 'Hora Inclusão Bloqueio 2', 'Motivo 1 Bloqueio 2',
@@ -32,12 +33,13 @@ COLUNAS = [
     'Bloqueio 8', 'Tipo Bloqueio 8', 'Descrição Bloqueio 8', 'Municipio Bloqueio 8', 'Número Edital Bloqueio 8', 'Ano Edital Bloqueio 8', 'Autoridade Bloqueio 8' , 'Número Lote Bloqueio 8', 'Número Protocolo Bloqueio 8', 'Ano Protocolo Bloqueio 8', 'Data Inclusão Bloqueio 8', 'Hora Inclusão Bloqueio 8', 'Motivo 1 Bloqueio 8',
     'Bloqueio 9', 'Tipo Bloqueio 9', 'Descrição Bloqueio 9', 'Municipio Bloqueio 9', 'Número Edital Bloqueio 9', 'Ano Edital Bloqueio 9', 'Autoridade Bloqueio 9' , 'Número Lote Bloqueio 9', 'Número Protocolo Bloqueio 9', 'Ano Protocolo Bloqueio 9', 'Data Inclusão Bloqueio 9', 'Hora Inclusão Bloqueio 9', 'Motivo 1 Bloqueio 9',
     'Bloqueio 10', 'Tipo Bloqueio 10', 'Descrição Bloqueio 10', 'Municipio Bloqueio 10', 'Número Edital Bloqueio 10', 'Ano Edital Bloqueio 10', 'Autoridade Bloqueio 10' , 'Número Lote Bloqueio 10', 'Número Protocolo Bloqueio 10', 'Ano Protocolo Bloqueio 10', 'Data Inclusão Bloqueio 10', 'Hora Inclusão Bloqueio 10', 'Motivo 1 Bloqueio 10',
-    
     'Transacao ID', 'Data/Hora'
 ]
 
-def processar_pdf(file_obj) -> list:
-    with pymupdf.open(stream=file_obj.read(), filetype="pdf") as doc:
+# --- 2. Função de Processamento (Recebe os bytes do arquivo) ---
+def processar_bytes_pdf(file_bytes) -> list:
+    # Abre o PDF a partir da memória
+    with pymupdf.open(stream=file_bytes, filetype="pdf") as doc:
         text = chr(12).join([page.get_text() for page in doc])
         
         # --- Limpeza e Padronização ---
@@ -94,9 +96,7 @@ def processar_pdf(file_obj) -> list:
         novos_valores = [qtd_municipal, val_municipal, qtd_detran, val_detran, qtd_der, val_der, qtd_outros, val_outros]
         valores_comuns.extend(novos_valores)
 
-        # --- PROCESSAMENTO DOS BLOQUEIOS (HORIZONTAL) ---
-        
-        # Lista onde vamos acumular todos os campos de bloqueio encontrados
+        # --- Bloqueios ---
         dados_todos_bloqueios = []
         
         campos_bloqueio = [
@@ -106,92 +106,107 @@ def processar_pdf(file_obj) -> list:
             'Data Inclusão', 'Hora Inclusão', 'Motivo 1'
         ]
         
-        # Regex de segurança
-        todos_campos_regex = "|".join([c.replace(" ", r"\s+") for c in campos_bloqueio])
+        regex_freio = "|".join([c.replace(" ", r"\s+") for c in campos_bloqueio])
 
         if tem_bloqueio:
             matches = list(re.finditer(r"Bloqueio\s+(\d+)", texto_bloqueios))
-            
-            # Limite máximo de 10 bloqueios para não estourar a planilha
             matches = matches[:10]
             
             for i, match in enumerate(matches):
                 num_bloqueio = match.group(1)
-                
                 inicio = match.start()
                 fim = matches[i+1].start() if i+1 < len(matches) else len(texto_bloqueios)
                 chunk_bloqueio = texto_bloqueios[inicio:fim]
-                
-                # Adiciona o número do bloqueio
                 dados_todos_bloqueios.append(num_bloqueio)
                 
-                # Extrai os 12 campos deste bloqueio
                 for campo in campos_bloqueio:
-                    padrao = fr"{campo}:\s*(.*?)(?=\n|\s+(?:{todos_campos_regex}):|$)"
+                    padrao = fr"{campo}:\s*(.*?)(?=\n|\s*(?:{regex_freio}):|$)"
                     match_campo = re.search(padrao, chunk_bloqueio, re.IGNORECASE)
                     valor = "Não informado"
-                    
                     if match_campo:
                         valor_extraido = match_campo.group(1).strip()
-                        eh_outro_campo = any(k.upper() + ":" in valor_extraido.upper() for k in campos_bloqueio)
-                        if valor_extraido != "" and not eh_outro_campo:
+                        if ":" in valor_extraido:
+                             parte_limpa = valor_extraido.split(":")[0]
+                             eh_nome_campo = any(k.upper() in parte_limpa.upper() for k in campos_bloqueio)
+                             if not eh_nome_campo and len(parte_limpa) > 0: valor = parte_limpa
+                        elif valor_extraido != "":
                             valor = valor_extraido
-                    
                     dados_todos_bloqueios.append(valor)
 
-        # --- PREENCHIMENTO (PADDING) ATÉ 10 BLOQUEIOS ---
-        # Cada bloqueio tem 13 campos (1 Numero + 12 Detalhes)
-        # Total de slots necessários para 10 bloqueios = 130
         TOTAL_SLOTS_BLOQUEIO = 10 * 13 
-        
         qtd_atual = len(dados_todos_bloqueios)
-        
         if qtd_atual < TOTAL_SLOTS_BLOQUEIO:
             faltam = TOTAL_SLOTS_BLOQUEIO - qtd_atual
             dados_todos_bloqueios.extend(['Não informado'] * faltam)
             
-        # --- MONTAGEM DA LINHA ÚNICA ---
-        
         linha_completa = valores_comuns + dados_todos_bloqueios
-        
-        # ID e Data no final
         transacao_id = re.search(r"Transação Id:\s*(.*?)\n", text)
         valor_transacao = transacao_id.group(1).strip() if transacao_id else "Não informado"
-        
         linha_completa.append(valor_transacao)
         linha_completa.append(data_hora_final)
 
-        # Retorna uma lista contendo a linha (formato lista de listas para o Pandas)
         return [linha_completa]
 
-# --- Streamlit UI ---
+# --- 3. Interface Visual do Streamlit ---
 
 st.set_page_config(page_title="Extrator de Veículos", layout="wide")
 st.title("Extrator de Dados de Veículos - Leilões")
-st.subheader("Faça o upload de um ou vários PDFs para gerar a planilha.")
+st.write("**OBS:** Caso seja muitos PDFS, transformar em ZIP")
 
-uploaded_files = st.file_uploader("Escolha os arquivos PDF", type=['pdf'], accept_multiple_files=True)
+# Aceita PDF e ZIP
+uploaded_files = st.file_uploader("Arraste seus PDFs ou arquivo ZIP aqui", type=['pdf', 'zip'], accept_multiple_files=True)
 
 if uploaded_files:
-    if st.button(f"Processar {len(uploaded_files)} Arquivo(s)"):
+    if st.button("Iniciar Processamento"):
         
         dados_totais = []
         barra_progresso = st.progress(0)
+        status_text = st.empty()
         
-        for i, pdf_file in enumerate(uploaded_files):
-            try:
-                linhas_extraidas = processar_pdf(pdf_file)
-                dados_totais.extend(linhas_extraidas)
-            except Exception as e:
-                st.error(f"Erro ao ler o arquivo {pdf_file.name}: {e}")
+        total_arquivos_processados = 0
+        
+        # --- Lógica para lidar com ZIP ou PDFs soltos ---
+        for i, file_obj in enumerate(uploaded_files):
             
+            # CASO 1: É um arquivo ZIP
+            if file_obj.name.lower().endswith('.zip'):
+                with zipfile.ZipFile(file_obj) as z:
+                    # Filtra apenas arquivos PDF dentro do ZIP
+                    lista_pdfs = [f for f in z.namelist() if f.lower().endswith('.pdf')]
+                    total_zip = len(lista_pdfs)
+                    
+                    for k, nome_pdf in enumerate(lista_pdfs):
+                        try:
+                            status_text.text(f"Lendo do ZIP: {nome_pdf}")
+                            # Lê o arquivo PDF específico dentro do ZIP (bytes)
+                            pdf_bytes = z.read(nome_pdf)
+                            
+                            # Processa
+                            linhas = processar_bytes_pdf(pdf_bytes)
+                            dados_totais.extend(linhas)
+                            
+                            # Libera memória
+                            del pdf_bytes
+                            if k % 50 == 0: gc.collect()
+                            
+                        except Exception as e:
+                            st.error(f"Erro no arquivo {nome_pdf}: {e}")
+            
+            # CASO 2: É um arquivo PDF solto
+            elif file_obj.name.lower().endswith('.pdf'):
+                try:
+                    status_text.text(f"Lendo arquivo: {file_obj.name}")
+                    pdf_bytes = file_obj.read()
+                    linhas = processar_bytes_pdf(pdf_bytes)
+                    dados_totais.extend(linhas)
+                except Exception as e:
+                    st.error(f"Erro ao ler {file_obj.name}: {e}")
+            
+            # Atualiza barra de progresso geral
             barra_progresso.progress((i + 1) / len(uploaded_files))
             
+        # --- Geração do Excel ---
         if dados_totais:
-            # Cria o DataFrame (com a trava de segurança para o tamanho das colunas)
-            # Se por acaso a lista tiver tamanho diferente, ajustamos antes do DF
-            
-            # Ajuste fino final caso sobre ou falte algo minúsculo
             linhas_ajustadas = []
             for linha in dados_totais:
                 if len(linha) > len(COLUNAS):
@@ -202,7 +217,7 @@ if uploaded_files:
             
             df = pd.DataFrame(linhas_ajustadas, columns=COLUNAS)
             
-            st.success("Processamento concluído com sucesso!")
+            st.success("Processamento concluído!")
             st.subheader("Prévia dos Dados")
             st.dataframe(df.head())
             
@@ -214,8 +229,10 @@ if uploaded_files:
                     worksheet.set_column(i, i, 20)
             
             st.download_button(
-                label="Baixar Planilha (Excel)",
+                label="Baixar Planilha",
                 data=buffer,
-                file_name="dados_veiculos_consolidado.xlsx",
+                file_name="dados_veiculos_extraidos.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+        else:
+            st.warning("Nenhum dado válido encontrado.")
