@@ -2,7 +2,7 @@ import streamlit as st
 import pymupdf
 import re
 import pandas as pd
-
+import io
 
 COLUNAS = [
     'Placa', 'Renavam', 'Ano modelo', 'Marca modelo', 'Ano Fabricação', 'Cor', 'Chassi', 'Remarcação Chassi', 
@@ -169,19 +169,29 @@ if uploaded_files:
             barra_progresso.progress((i + 1) / len(uploaded_files))
             
         if dados_totais:
-            # Agora não vai dar erro, pois forçamos o tamanho das linhas
+            # Cria o DataFrame
             df = pd.DataFrame(dados_totais, columns=COLUNAS)
             
             st.success("Processamento concluído com sucesso!")
             st.subheader("Prévia dos Dados")
             st.dataframe(df.head())
             
-            excel = df.to_excel(index=False, excel_writer=None, engine='openpyxl')
+            # --- CONVERSÃO PARA EXCEL ---
+            buffer = io.BytesIO() # Cria um buffer na memória
+            
+            # Usa o motor 'xlsxwriter' para escrever no buffer
+            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                df.to_excel(writer, index=False, sheet_name='Dados Veiculos')
+                
+                # Ajuste automático de largura das colunas (Opcional, mas fica bonito)
+                worksheet = writer.sheets['Dados Veiculos']
+                for i, col in enumerate(df.columns):
+                    worksheet.set_column(i, i, 20) # Define largura 20 para todas as colunas
+            
+            # Prepara o arquivo para download
             st.download_button(
-                label="Baixar Planilha (Excel)",
-                data=excel,
-                file_name="Veiculos Extraidos.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                label="Baixar Planilha",
+                data=buffer,
+                file_name="dados_veiculos_extraidos.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-        else:
-            st.warning("Nenhum dado foi extraído dos PDFs.")
